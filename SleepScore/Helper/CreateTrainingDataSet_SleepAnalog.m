@@ -1,7 +1,7 @@
-function [] = CreateTrainingDataSet_SleepAnalog(procDataFileIDs, NBins, forceRescore)
+function [] = CreateTrainingDataSet_SleepAnalog(procDataFileIDs, NBins, forceRescore, binWidth_s)
 %CREATETRAININGDATASET_SLEEPANALOG  Interactive manual sleep scoring for analog data.
-%   CreateTrainingDataSet_SleepAnalog(PROCDATAFILEIDs, NBINS, FORCERESCORE) launches an
-%   interactive workflow to generate per-5-second sleep state labels for one or
+%   CreateTrainingDataSet_SleepAnalog(PROCDATAFILEIDs, NBINS, FORCERESCORE, BINWIDTH_S) launches an
+%   interactive workflow to generate per-bin sleep state labels for one or
 %   more processed analog data files. It is the same logic as your original
 %   CreateTrainingDataSet_ShowScore, but uses Generate_SleepScoringFigure_Analog
 %   for the main plotting figure (force + binForce + EMG power + ECoG spectrogram).
@@ -14,12 +14,16 @@ function [] = CreateTrainingDataSet_SleepAnalog(procDataFileIDs, NBins, forceRes
 %       procDataFileIDs  Char array (N×M) or cellstr, each row/element the path
 %                        to a *ProcData.mat* file to score.
 %
-%       NBins            Positive integer. Number of 5-second bins to label for
-%                        each file (i.e., NBins = round(totalDurationSeconds/5)).
+%       NBins            Positive integer. Number of bins to label for
+%                        each file (e.g., NBins = round(totalDurationSeconds/binWidth_s)).
 %
 %       forceRescore     (logical, optional)
 %                        false (default) -> skip files that already have TrainingData.mat
 %                        true            -> redo sleep scoring even if TrainingData.mat exists
+%
+%       binWidth_s       (numeric, optional)
+%                        Bin width in seconds (e.g., 5 for 5-s bins, 1 for 1-s bins).
+%                        Default = 5 (original behavior).
 %
 %   PER-FILE OUTPUTS
 %       <prefix>TrainingData.mat    % struct trainingTable.behavState (NBins×1 cell)
@@ -39,6 +43,9 @@ clc;
 
 if nargin < 3 || isempty(forceRescore)
     forceRescore = false;
+end
+if nargin < 4 || isempty(binWidth_s)
+    binWidth_s = 5;   % default: original behavior
 end
 
 %% Load the data and other information
@@ -90,14 +97,16 @@ for a = 1:size(procDataFileIDs,1)
         disp('  1) Mark ENTIRE FILE as AWAKE (Not Sleep) and skip to next file');
         disp('  2) Proceed to manual scoring');
         choice1 = input('Enter 1 or 2: ');
-        numBins = NBins;
-        behavioralState = cell(numBins,1);   % <-- no prefill
-        allDur_s = numBins*5;
+
+        % ----- BIN SETTINGS -----
+        numBins         = NBins;
+        behavioralState = cell(numBins,1);   % no prefill
+        allDur_s        = numBins * binWidth_s;
 
         % Store scoring state on main figure for external viewers (e.g., Plot scores button)
         setappdata(figHandle,'behavioralState',behavioralState);
         setappdata(figHandle,'numBins',numBins);
-        setappdata(figHandle,'binWidth_s',5);
+        setappdata(figHandle,'binWidth_s',binWidth_s);
         setappdata(figHandle,'allDur_s',allDur_s);
         setappdata(figHandle,'procDataFileID',procDataFileID);
 
@@ -111,7 +120,7 @@ for a = 1:size(procDataFileIDs,1)
             trainingTable = paramsTable; %#ok<NASGU>
             save(trainingDataFileID, 'trainingTable')
             % === ALSO UPDATE ProcData ===
-            updateProcDataWithSleep(procDataFileID, behavioralState, numBins, 5);
+            updateProcDataWithSleep(procDataFileID, behavioralState, numBins, binWidth_s);
             disp('Saved file as all AWAKE (Not Sleep) and updated ProcData. Moving to next file...'); disp(' ')
             continue
         end
@@ -130,7 +139,7 @@ for a = 1:size(procDataFileIDs,1)
             startFrom_s = input('Full-file START time in seconds (default 0): ');
             if isempty(startFrom_s) || ~isnumeric(startFrom_s), startFrom_s = 0; end
             startFrom_s = max(0, min(startFrom_s, allDur_s));
-            startBin = max(1, ceil(startFrom_s/5));
+            startBin = max(1, ceil(startFrom_s / binWidth_s));
             binsToScore = startBin:numBins;
 
             % BEFORE start -> leave [] (explicit)
@@ -177,8 +186,8 @@ for a = 1:size(procDataFileIDs,1)
             binsToScore = [];
             for k = 1:size(windows,1)
                 s = windows(k,1); e = windows(k,2);
-                bStart = max(1, floor((s-1)/5)+1);
-                bEnd   = min(numBins, ceil(e/5));
+                bStart = max(1, floor(s / binWidth_s) + 1);
+                bEnd   = min(numBins, ceil(e / binWidth_s));
                 binsToScore = [binsToScore, bStart:bEnd]; %#ok<AGROW>
             end
             binsToScore = unique(binsToScore);
@@ -197,8 +206,8 @@ for a = 1:size(procDataFileIDs,1)
             binWindowIdx = zeros(1,numBins);
             for k = 1:size(windows,1)
                 s = windows(k,1); e = windows(k,2);
-                bStart = max(1, floor((s-1)/5)+1);
-                bEnd   = min(numBins, ceil(e/5));
+                bStart = max(1, floor(s / binWidth_s) + 1);
+                bEnd   = min(numBins, ceil(e / binWidth_s));
                 binWindowIdx(bStart:bEnd) = k;
             end
         end
@@ -211,6 +220,9 @@ for a = 1:size(procDataFileIDs,1)
         doJumpNow = false;
         targetBi  = [];
 
+        % checkpoint frequency approx every 500 s
+        checkpointBins = max(1, round(500 / binWidth_s));
+
         while bi <= numel(binsToScore)
             b = binsToScore(bi);
 
@@ -222,20 +234,20 @@ for a = 1:size(procDataFileIDs,1)
             global closeButtonState %#ok<TLEV>
             closeButtonState = 0;
 
-            xStartVal = (b*5) - 4;
-            xEndVal   = b*5;
-            xInds     = xStartVal:1:xEndVal;
+            % Bin b corresponds to [ (b-1)*binWidth_s , b*binWidth_s ]
+            xStartVal = (b - 1) * binWidth_s;
+            xEndVal   = b * binWidth_s;
 
             % bin markers
             subplot(ax4); hold on
-            leftEdge3  = xline(xInds(1),'color',[0.75 0 1],'LineWidth',2,'HandleVisibility','off');
-            rightEdge3 = xline(xInds(5),'color',[0.75 0 1],'LineWidth',2,'HandleVisibility','off');
+            leftEdge3  = xline(xStartVal,'color',[0.75 0 1],'LineWidth',2,'HandleVisibility','off');
+            rightEdge3 = xline(xEndVal,  'color',[0.75 0 1],'LineWidth',2,'HandleVisibility','off');
 
             subplot(ax6); hold on
-            leftEdge6  = xline(xInds(1),'color',[0.75 0 1],'LineWidth',2,'HandleVisibility','off');
-            rightEdge6 = xline(xInds(5),'color',[0.75 0 1],'LineWidth',2,'HandleVisibility','off');
+            leftEdge6  = xline(xStartVal,'color',[0.75 0 1],'LineWidth',2,'HandleVisibility','off');
+            rightEdge6 = xline(xEndVal,  'color',[0.75 0 1],'LineWidth',2,'HandleVisibility','off');
 
-           % view window (full-file vs windowed ≥500 s)
+           % view window (full-file vs windowed)
             if ~isempty(binWindowIdx) && binWindowIdx(b) ~= 0
                 % Use pre-defined window index
                 k = binWindowIdx(b);
@@ -250,10 +262,14 @@ for a = 1:size(procDataFileIDs,1)
                     x2 = min(allDur_s, x2 + shift);
                 end
             else
-                % Generic 500 s windowing across the FULL duration
-                winLen = 500;                 % seconds
-                % Each 100 bins ≈ 500 s (keep your existing bin logic)
-                winIdx = ceil(b/100);         % 1,2,3,... as b increases
+                % Generic windowing across the FULL duration
+                if binWidth_s == 5
+                    winLen = 500;   % seconds, original behavior
+                else
+                    winLen = 300;   % seconds, tighter window for 1 s bins
+                end
+                binsPerWindow = max(1, round(winLen / binWidth_s));
+                winIdx = ceil(b / binsPerWindow);   % 1,2,3,... as b increases
             
                 x1 = (winIdx - 1) * winLen;   % start of the window
                 x2 = x1 + winLen;             % nominal end of the window
@@ -267,11 +283,9 @@ for a = 1:size(procDataFileIDs,1)
                 end
             end
 
-
-
             xlim(ax4,[x1 x2]); xlim(ax6,[x1 x2]);
 
-            if mod(b,100)==0 || bi==numel(binsToScore)
+            if mod(b,checkpointBins)==0 || bi==numel(binsToScore)
                 closeButtonState = 1;
             end
 
@@ -345,7 +359,7 @@ for a = 1:size(procDataFileIDs,1)
                             behavioralState = markBinsAsEmpty(bi+1, binsToScore, behavioralState);
                             breakOutAll = true;
                         elseif strcmp(choice,'Jump in plot')
-                            [targetBi, betweenIdx] = pickJumpOnPlot(figHandle, allDur_s, binsToScore, bi);
+                            [targetBi, betweenIdx] = pickJumpOnPlot(figHandle, allDur_s, binsToScore, bi, binWidth_s);
                             if ~isempty(targetBi) && targetBi > bi
                                 behavioralState = setBetweenAsEmpty(betweenIdx, binsToScore, behavioralState);
                             end
@@ -356,14 +370,14 @@ for a = 1:size(procDataFileIDs,1)
                         enableClickZoom(figHandle, ax4, ax6, allDur_s, false);
 
                     case 'jump_plot'
-                        [targetBi, betweenIdx] = pickJumpOnPlot(figHandle, allDur_s, binsToScore, bi);
+                        [targetBi, betweenIdx] = pickJumpOnPlot(figHandle, allDur_s, binsToScore, bi, binWidth_s);
                         if ~isempty(targetBi) && targetBi > bi
                             behavioralState = setBetweenAsEmpty(betweenIdx, binsToScore, behavioralState);
                         end
                         doJumpNow = true;
 
                     case 'jump_time'
-                        [targetBi, betweenIdx] = pickJumpByTime(figHandle, allDur_s, binsToScore, bi);
+                        [targetBi, betweenIdx] = pickJumpByTime(figHandle, allDur_s, binsToScore, bi, binWidth_s);
                         if ~isempty(targetBi) && targetBi > bi
                             behavioralState = setBetweenAsEmpty(betweenIdx, binsToScore, behavioralState);
                         end
@@ -375,8 +389,8 @@ for a = 1:size(procDataFileIDs,1)
                         xl = get(ax4,'XLim');  % use ax4 as canonical
                         sW = max(0, xl(1)); eW = min(allDur_s, xl(2));
                         % map to bins
-                        bStartW = max(1, floor((sW-1)/5)+1);
-                        bEndW   = min(numBins, ceil(eW/5));
+                        bStartW = max(1, floor(sW / binWidth_s) + 1);
+                        bEndW   = min(numBins, ceil(eW / binWidth_s));
                         % intersect with active scoring set
                         activeMask = ismember(bStartW:bEndW, binsToScore);
                         tgtBins = (bStartW:bEndW); tgtBins = tgtBins(activeMask);
@@ -397,85 +411,85 @@ for a = 1:size(procDataFileIDs,1)
                             breakOutAll = true; % at/past end
                         end
 
-                                    case 'bulk_plot'
-                    % Bulk label: choose label + window via PLOT CLICKS
-                    [okBulk, selLabel, sBulk, eBulk] = bulkLabelPlotDialog(figHandle, ax4, ax6, allDur_s);
-                    if okBulk
-                        behavioralState = applyBulkLabel(behavioralState, sBulk, eBulk, binsToScore, numBins, selLabel);
+                    case 'bulk_plot'
+                        % Bulk label: choose label + window via PLOT CLICKS
+                        [okBulk, selLabel, sBulk, eBulk] = bulkLabelPlotDialog(figHandle, ax4, ax6, allDur_s);
+                        if okBulk
+                            behavioralState = applyBulkLabel(behavioralState, sBulk, eBulk, binsToScore, numBins, selLabel, binWidth_s);
 
-                        % NEW: mark selected region persistently on main figure
-                        markBulkRegion(figHandle, ax4, ax6, sBulk, eBulk, allDur_s);
+                            % NEW: mark selected region persistently on main figure
+                            markBulkRegion(figHandle, ax4, ax6, sBulk, eBulk, allDur_s);
 
-                        % Map bulk window to bin indices
-                        bStartBulk = max(1, floor((sBulk-1)/5)+1);
-                        bEndBulk   = min(numBins, ceil(eBulk/5));
+                            % Map bulk window to bin indices
+                            bStartBulk = max(1, floor(sBulk / binWidth_s) + 1);
+                            bEndBulk   = min(numBins, ceil(eBulk / binWidth_s));
 
-                        % Indices in binsToScore that fall inside the bulk window
-                        idxInSet = find(ismember(binsToScore, bStartBulk:bEndBulk));
+                            % Indices in binsToScore that fall inside the bulk window
+                            idxInSet = find(ismember(binsToScore, bStartBulk:bEndBulk));
 
-                        if ~isempty(idxInSet)
-                            firstIdxInSet = idxInSet(1);
-                            lastIdxInSet  = idxInSet(end);
+                            if ~isempty(idxInSet)
+                                firstIdxInSet = idxInSet(1);
+                                lastIdxInSet  = idxInSet(end);
 
-                            %%%% FILL GAPS BETWEEN CURRENT BIN AND FIRST BULK BIN AS 'Not Sleep'
-                            if firstIdxInSet > bi
-                                for idxGap = (bi+1):(firstIdxInSet-1)
-                                    bGap = binsToScore(idxGap);
-                                    if isempty(behavioralState{bGap,1})
-                                        behavioralState{bGap,1} = 'Not Sleep';
+                                %%%% FILL GAPS BETWEEN CURRENT BIN AND FIRST BULK BIN AS 'Not Sleep'
+                                if firstIdxInSet > bi
+                                    for idxGap = (bi+1):(firstIdxInSet-1)
+                                        bGap = binsToScore(idxGap);
+                                        if isempty(behavioralState{bGap,1})
+                                            behavioralState{bGap,1} = 'Not Sleep';
+                                        end
                                     end
                                 end
-                            end
 
-                            % Move cursor to the end of the bulk-labeled window (immediate)
-                            targetBi = lastIdxInSet + 1;
-                            if targetBi <= numel(binsToScore)
-                                doJumpNow = true;
-                            else
-                                breakOutAll = true;
-                            end
-                        end
-                    end
-
-                case 'bulk_time'
-                    % Bulk label: choose label + window via TYPED seconds
-                    [okBulk, selLabel, sBulk, eBulk] = bulkLabelTimeDialog(figHandle, allDur_s);
-                    if okBulk
-                        behavioralState = applyBulkLabel(behavioralState, sBulk, eBulk, binsToScore, numBins, selLabel);
-
-                        % NEW: mark selected region persistently on main figure
-                        markBulkRegion(figHandle, ax4, ax6, sBulk, eBulk, allDur_s);
-
-                        % Map bulk window to bin indices
-                        bStartBulk = max(1, floor((sBulk-1)/5)+1);
-                        bEndBulk   = min(numBins, ceil(eBulk/5));
-
-                        % Indices in binsToScore that fall inside the bulk window
-                        idxInSet = find(ismember(binsToScore, bStartBulk:bEndBulk));
-
-                        if ~isempty(idxInSet)
-                            firstIdxInSet = idxInSet(1);
-                            lastIdxInSet  = idxInSet(end);
-
-                            %%%% FILL GAPS BETWEEN CURRENT BIN AND FIRST BULK BIN AS 'Not Sleep'
-                            if firstIdxInSet > bi
-                                for idxGap = (bi+1):(firstIdxInSet-1)
-                                    bGap = binsToScore(idxGap);
-                                    if isempty(behavioralState{bGap,1})
-                                        behavioralState{bGap,1} = 'Not Sleep';
-                                    end
+                                % Move cursor to the end of the bulk-labeled window (immediate)
+                                targetBi = lastIdxInSet + 1;
+                                if targetBi <= numel(binsToScore)
+                                    doJumpNow = true;
+                                else
+                                    breakOutAll = true;
                                 end
                             end
+                        end
 
-                            % Move cursor to the end of the bulk-labeled window (immediate)
-                            targetBi = lastIdxInSet + 1;
-                            if targetBi <= numel(binsToScore)
-                                doJumpNow = true;
-                            else
-                                breakOutAll = true;
+                    case 'bulk_time'
+                        % Bulk label: choose label + window via TYPED seconds
+                        [okBulk, selLabel, sBulk, eBulk] = bulkLabelTimeDialog(figHandle, allDur_s);
+                        if okBulk
+                            behavioralState = applyBulkLabel(behavioralState, sBulk, eBulk, binsToScore, numBins, selLabel, binWidth_s);
+
+                            % NEW: mark selected region persistently on main figure
+                            markBulkRegion(figHandle, ax4, ax6, sBulk, eBulk, allDur_s);
+
+                            % Map bulk window to bin indices
+                            bStartBulk = max(1, floor(sBulk / binWidth_s) + 1);
+                            bEndBulk   = min(numBins, ceil(eBulk / binWidth_s));
+
+                            % Indices in binsToScore that fall inside the bulk window
+                            idxInSet = find(ismember(binsToScore, bStartBulk:bEndBulk));
+
+                            if ~isempty(idxInSet)
+                                firstIdxInSet = idxInSet(1);
+                                lastIdxInSet  = idxInSet(end);
+
+                                %%%% FILL GAPS BETWEEN CURRENT BIN AND FIRST BULK BIN AS 'Not Sleep'
+                                if firstIdxInSet > bi
+                                    for idxGap = (bi+1):(firstIdxInSet-1)
+                                        bGap = binsToScore(idxGap);
+                                        if isempty(behavioralState{bGap,1})
+                                            behavioralState{bGap,1} = 'Not Sleep';
+                                        end
+                                    end
+                                end
+
+                                % Move cursor to the end of the bulk-labeled window (immediate)
+                                targetBi = lastIdxInSet + 1;
+                                if targetBi <= numel(binsToScore)
+                                    doJumpNow = true;
+                                else
+                                    breakOutAll = true;
+                                end
                             end
                         end
-                    end
 
                 end
             end
@@ -528,7 +542,7 @@ for a = 1:size(procDataFileIDs,1)
         save(trainingDataFileID, 'trainingTable')
 
         % === ALSO UPDATE ProcData WITH SLEEP LABELS ===
-        updateProcDataWithSleep(procDataFileID, behavioralState, numBins, 5);
+        updateProcDataWithSleep(procDataFileID, behavioralState, numBins, binWidth_s);
 
     else
         disp([trainingDataFileID ' already exists. Skipping (forceRescore == false)...']); 
@@ -761,8 +775,8 @@ for b = 1:min(numBins, numel(behavioralState))
     end
 end
 
-tEdges        = (0:numBins)*binWidth_s;      % bin edges for bands
-trialDuration = numBins*binWidth_s;          % default if file not loaded
+tEdges        = (0:numBins)*binWidth_s;   % bin edges for bands
+trialDuration = numBins*binWidth_s;       % default if file not loaded
 
 % -------------------------------------------------------------------------
 % Load ProcData and SpecData to reconstruct EMG + spectrogram
@@ -1235,12 +1249,12 @@ for idx = betweenIdx
 end
 end
 
-function [jumpBi, betweenIdx] = pickJumpOnPlot(figHandle, allDur_s, binsToScore, bi)
+function [jumpBi, betweenIdx] = pickJumpOnPlot(figHandle, allDur_s, binsToScore, bi, binWidth_s)
 figure(figHandle);
 [t,~,~] = ginput(1);
 if isempty(t), jumpBi = []; betweenIdx = []; return; end
 t = max(0, min(t, allDur_s));
-targetBin = max(1, ceil(t/5));
+targetBin = max(1, ceil(t / binWidth_s));
 jumpBi = find(binsToScore >= targetBin, 1, 'first');
 if isempty(jumpBi)
     betweenIdx = (bi+1):numel(binsToScore);
@@ -1253,14 +1267,14 @@ else
 end
 end
 
-function [jumpBi, betweenIdx] = pickJumpByTime(figHandle, allDur_s, binsToScore, bi)
-defaultT = num2str(binsToScore(bi)*5);
+function [jumpBi, betweenIdx] = pickJumpByTime(figHandle, allDur_s, binsToScore, bi, binWidth_s)
+defaultT = num2str(binsToScore(bi) * binWidth_s);
 answer = inputdlg('Jump start time (seconds):','Jump',[1 35],{defaultT});
 if isempty(answer), jumpBi = []; betweenIdx = []; return; end
 t = str2double(answer{1});
 if isnan(t), jumpBi = []; betweenIdx = []; return; end
 t = max(0, min(t, allDur_s));
-targetBin = max(1, ceil(t/5));
+targetBin = max(1, ceil(t / binWidth_s));
 jumpBi = find(binsToScore >= targetBin, 1, 'first');
 if isempty(jumpBi)
     betweenIdx = (bi+1):numel(binsToScore);
@@ -1280,7 +1294,7 @@ ok = false; selLabel = ''; s = []; e = [];
     'SelectionMode','single', ...
     'ListString',{'Not Sleep','NREM Sleep','REM Sleep'}, ...
     'InitialValue',1,'ListSize',[180 90]);
-if ~tf, return; end
+if !tf, return; end
 labels = {'Not Sleep','NREM Sleep','REM Sleep'};
 selLabel = labels{indx};
 
@@ -1325,12 +1339,12 @@ s = max(0, s); e = min(allDur_s, e);
 ok = true;
 end
 
-function behavioralState = applyBulkLabel(behavioralState, s, e, binsToScore, numBins, selLabel)
-bStart = max(1, floor((s-1)/5)+1);
-bEnd   = min(numBins, ceil(e/5));
+function behavioralState = applyBulkLabel(behavioralState, s, e, binsToScore, numBins, selLabel, binWidth_s)
+bStart = max(1, floor(s / binWidth_s) + 1);
+bEnd   = min(numBins, ceil(e / binWidth_s));
 
 if ~isempty(binsToScore) && numel(binsToScore) < numBins
-    mask = ismember(bStart:bEnd, binsToScore);
+    mask       = ismember(bStart:bEnd, binsToScore);
     targetBins = (bStart:bEnd);
     targetBins = targetBins(mask);
 else
